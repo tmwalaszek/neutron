@@ -2463,23 +2463,36 @@ class OVNClient(object):
         db_rev.delete_revision(context, security_group_id,
                                ovn_const.TYPE_SECURITY_GROUPS)
 
-    def _process_security_group_rule(self, rule, is_add_acl=True):
+    def _process_security_group_rule(self, rule, is_add_acl=True, txn=None):
         admin_context = n_context.get_admin_context()
         ovn_acl.update_acls_for_security_group(
             self._plugin, admin_context, self._nb_idl,
             rule['security_group_id'], rule,
             is_add_acl=is_add_acl,
-            stateless_supported=self.is_allow_stateless_supported())
+            stateless_supported=self.is_allow_stateless_supported(),
+            txn=txn)
 
-    def create_security_group_rule(self, context, rule):
-        self._process_security_group_rule(rule)
-        db_rev.bump_revision(
-            context, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
+    def create_security_group_rule(self, context, rule, txn=None):
+        self._process_security_group_rule(rule, txn=txn)
+        # Caller owns the commit when txn is given, so it bumps the
+        # revision, not us.
+        if txn is None:
+            db_rev.bump_revision(
+                context, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
     def delete_security_group_rule(self, context, rule):
         self._process_security_group_rule(rule, is_add_acl=False)
         db_rev.delete_revision(
             context, rule['id'], ovn_const.TYPE_SECURITY_GROUP_RULES)
+
+    def update_security_group_rule(self, context, original_rule,
+                                   updated_rule, txn=None):
+        # Don't chain delete_security_group_rule()+create_security_group_rule()
+        # here, that would delete_revision() a rule that's still live.
+        # Caller bumps the revision once the txn commits.
+        self._process_security_group_rule(original_rule,
+                                          is_add_acl=False, txn=txn)
+        self._process_security_group_rule(updated_rule, txn=txn)
 
     def _find_metadata_port(self, context, network_id):
         if not ovn_conf.is_ovn_metadata_enabled():
