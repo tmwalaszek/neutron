@@ -358,6 +358,84 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
     def test_fix_security_group_create_version_mismatch(self):
         self._test_fix_security_group_create(revision_number=2)
 
+    @mock.patch.object(maintenance.DBInconsistenciesPeriodics,
+                       '_fix_security_group_rule')
+    def test__fix_create_update_security_group_rule_dispatch(
+            self, mock_fix_sgr):
+        # Security group rules must never go through the generic
+        # ovn_get/ovn_create/ovn_update dispatch below -- get_acl_by_id
+        # cannot tell an existing ACL from a stale one for this resource
+        # type (see _fix_security_group_rule docstring).
+        rule = {'id': 'sgr_id', 'security_group_id': 'sg_id'}
+        row = mock.Mock(resource_type=constants.TYPE_SECURITY_GROUP_RULES,
+                        resource_uuid='sgr_id')
+        self.fake_ovn_client._plugin.get_security_group_rule.\
+            return_value = rule
+        self.periodic._fix_create_update(self.ctx, row)
+        mock_fix_sgr.assert_called_once_with(self.ctx, rule)
+        self.fake_ovn_client._nb_idl.get_acl_by_id.assert_not_called()
+
+    def test__fix_security_group_rule(self):
+        sg = self._make_security_group(
+            self.fmt, 'sg1', 'sg1')['security_group']
+        rule_req = self._build_security_group_rule(
+            sg['id'], 'ingress', n_const.PROTO_NAME_TCP, '22', '22')
+        rule = self.deserialize(
+            self.fmt, self._create_security_group_rule(
+                self.fmt, rule_req))['security_group_rule']
+        rule['revision_number'] = 1
+
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            ovn_revision_numbers_db.create_initial_revision(
+                self.ctx, rule['id'], constants.TYPE_SECURITY_GROUP_RULES)
+
+        fake_txn = mock.MagicMock()
+        self.fake_ovn_client._nb_idl.transaction.return_value.__enter__.\
+            return_value = fake_txn
+        fake_del_cmd = self.fake_ovn_client._nb_idl.delete_acl_by_sg_id.\
+            return_value
+        fake_sg = self.fake_ovn_client._plugin.get_security_group.return_value
+
+        with mock.patch.object(maintenance.ovn_acl,
+                               'add_acls_for_sg_port_group') as mock_add_acls:
+            self.periodic._fix_security_group_rule(self.ctx, rule)
+
+        self.fake_ovn_client._nb_idl.delete_acl_by_sg_id.\
+            assert_called_once_with(sg['id'], rule['id'], if_exists=True)
+        fake_txn.add.assert_called_once_with(fake_del_cmd)
+        self.fake_ovn_client._plugin.get_security_group.\
+            assert_called_once_with(self.ctx, sg['id'])
+        mock_add_acls.assert_called_once_with(
+            self.fake_ovn_client._nb_idl, fake_sg, fake_txn,
+            self.fake_ovn_client.is_allow_stateless_supported.return_value)
+
+        row = ovn_revision_numbers_db.get_revision_row(self.ctx, rule['id'])
+        self.assertEqual(rule['revision_number'], row.revision_number)
+
+    def test__fix_security_group_rule_sg_disabled(self):
+        sg = self._make_security_group(
+            self.fmt, 'sg1', 'sg1')['security_group']
+        rule_req = self._build_security_group_rule(
+            sg['id'], 'ingress', n_const.PROTO_NAME_TCP, '22', '22')
+        rule = self.deserialize(
+            self.fmt, self._create_security_group_rule(
+                self.fmt, rule_req))['security_group_rule']
+        rule['revision_number'] = 1
+
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            ovn_revision_numbers_db.create_initial_revision(
+                self.ctx, rule['id'], constants.TYPE_SECURITY_GROUP_RULES)
+
+        cfg.CONF.set_override('enable_security_group', False, 'SECURITYGROUP')
+        with mock.patch.object(maintenance.ovn_acl,
+                               'add_acls_for_sg_port_group') as mock_add_acls:
+            self.periodic._fix_security_group_rule(self.ctx, rule)
+
+        self.fake_ovn_client._nb_idl.delete_acl_by_sg_id.assert_not_called()
+        mock_add_acls.assert_not_called()
+        row = ovn_revision_numbers_db.get_revision_row(self.ctx, rule['id'])
+        self.assertEqual(rule['revision_number'], row.revision_number)
+
     @mock.patch.object(maintenance, 'LOG')
     def test__fix_create_update_no_sttd_attr(self, mock_log):
         row_net = ovn_models.OVNRevisionNumbers(
