@@ -282,6 +282,9 @@ class OVNMechanismDriver(api.MechanismDriver):
             registry.subscribe(self._process_sg_rule_notification,
                                resources.SECURITY_GROUP_RULE,
                                events.BEFORE_DELETE)
+            registry.subscribe(self._process_sg_rule_notification,
+                               resources.SECURITY_GROUP_RULE,
+                               events.AFTER_UPDATE)
 
     def _remove_node_from_hash_ring(self, *args, **kwargs):
         # The node_uuid attribute will be empty for worker types
@@ -479,6 +482,28 @@ class OVNMechanismDriver(api.MechanismDriver):
             self._ovn_client.delete_security_group_rule(
                 context,
                 sg_rule)
+        elif event == events.AFTER_UPDATE:
+            original_rule, updated_rule = payload.states
+            # OVN has no in-place ACL update, delete+add in one txn so
+            # there's no window with neither present.
+            skip_delete = False
+            if original_rule.get('remote_ip_prefix') is not None:
+                # Same as BEFORE_DELETE: skip delete if a sibling rule
+                # shares this ACL match.
+                skip_delete = self._sg_has_rules_with_same_normalized_cidr(
+                    original_rule)
+            with self._ovn_client._nb_idl.transaction(
+                    check_error=True) as txn:
+                if skip_delete:
+                    self._ovn_client.create_security_group_rule(
+                        context, updated_rule, txn=txn)
+                else:
+                    self._ovn_client.update_security_group_rule(
+                        context, original_rule, updated_rule, txn=txn)
+            # Bump the revision only once the txn commits, or a failed
+            # NB commit would be hidden from the consistency check.
+            ovn_revision_numbers_db.bump_revision(
+                context, updated_rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
     def _sg_has_rules_with_same_normalized_cidr(self, sg_rule):
         compare_keys = [

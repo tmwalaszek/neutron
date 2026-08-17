@@ -248,6 +248,24 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                 LOG.exception(
                     'Unknown error while executing "%s"', func.__name__)
 
+    def _fix_security_group_rule(self, context, n_obj):
+        # ACL UUID isn't tied to the rule id, so we can't tell if it's
+        # stale. Drop and re-add in one txn instead.
+        try:
+            with self._nb_idl.transaction(check_error=True) as txn:
+                txn.add(self._nb_idl.delete_acl_by_sg_id(
+                    n_obj['security_group_id'], n_obj['id'],
+                    if_exists=True))
+                self._ovn_client.create_security_group_rule(
+                    context, n_obj, txn=txn)
+            # Bump revision only after commit succeeds, same reason as
+            # AFTER_UPDATE in mech_driver.py.
+            revision_numbers_db.bump_revision(
+                context, n_obj, ovn_const.TYPE_SECURITY_GROUP_RULES)
+        except revision_numbers_db.StandardAttributeIDNotFound:
+            LOG.error('Standard attribute ID not found for object ID %s',
+                      n_obj['id'])
+
     def _fix_create_update(self, context, row):
         res_map = self._resources_func_map[row.resource_type]
         try:
@@ -260,16 +278,16 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
                                              'res_type': row.resource_type})
             return
 
+        if row.resource_type == ovn_const.TYPE_SECURITY_GROUP_RULES:
+            self._fix_security_group_rule(context, n_obj)
+            return
+
         ovn_obj = res_map['ovn_get'](row.resource_uuid)
         try:
             if not ovn_obj:
                 res_map['ovn_create'](context, n_obj)
             else:
-                if row.resource_type == ovn_const.TYPE_SECURITY_GROUP_RULES:
-                    LOG.error("SG rule %s found with a revision number while "
-                              "this resource doesn't support updates",
-                              row.resource_uuid)
-                elif row.resource_type == ovn_const.TYPE_SECURITY_GROUPS:
+                if row.resource_type == ovn_const.TYPE_SECURITY_GROUPS:
                     # In OVN, we don't care about updates to security groups,
                     # so just bump the revision number to whatever it's
                     # supposed to be.
