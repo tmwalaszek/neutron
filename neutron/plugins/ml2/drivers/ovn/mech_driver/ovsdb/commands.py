@@ -645,17 +645,16 @@ class DelACLBySGruleIDCommand(command.BaseCommand):
                 'table': self.lookup_table, 'name': pg_name}
             raise RuntimeError(msg)
 
-        acls_to_del = None
+        acls_to_del = []
         acls = getattr(port_group, 'acls', [])
         for acl in acls:
             ext_ids = getattr(acl, 'external_ids', {})
             if (ext_ids.get(ovn_const.OVN_SG_RULE_EXT_ID_KEY) ==
                     self.sg_rule_id):
-                acls_to_del = acl
-                break
-        if acls_to_del:
-            acls_to_del.delete()
-            _updatevalues_in_list(port_group, 'acls', old_values=[acls_to_del])
+                acls_to_del.append(acl)
+        for acl in acls_to_del:
+            acl.delete()
+        _updatevalues_in_list(port_group, 'acls', old_values=acls_to_del)
 
 
 class AddStaticRouteCommand(command.BaseCommand):

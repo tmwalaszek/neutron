@@ -671,6 +671,69 @@ class TestDelACLCommand(TestBaseCommand):
             fake_lswitch.delvalue.assert_called_once_with('acls', mock.ANY)
 
 
+class TestDelACLBySGruleIDCommand(TestBaseCommand):
+
+    def _test_port_group_no_exist(self, if_exists):
+        with mock.patch.object(idlutils, 'row_by_value',
+                               side_effect=idlutils.RowNotFound):
+            cmd = commands.DelACLBySGruleIDCommand(
+                self.ovn_api, 'fake-sg', 'fake-sg-rule', if_exists=if_exists)
+            if if_exists:
+                cmd.run_idl(self.transaction)
+            else:
+                self.assertRaises(RuntimeError, cmd.run_idl, self.transaction)
+
+    def test_port_group_no_exist_ignore(self):
+        self._test_port_group_no_exist(if_exists=True)
+
+    def test_port_group_no_exist_fail(self):
+        self._test_port_group_no_exist(if_exists=False)
+
+    def test_acl_del_by_sg_rule_id(self):
+        fake_sg_rule_id = 'fake-sg-rule-id'
+        fake_acls_del = [
+            fakes.FakeOvsdbRow.create_one_ovsdb_row(
+                attrs={'external_ids': {
+                    ovn_const.OVN_SG_RULE_EXT_ID_KEY: fake_sg_rule_id}})
+            for _ in range(2)]
+        fake_acl_save = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_SG_RULE_EXT_ID_KEY: 'other-sg-rule-id'}})
+        fake_pg = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'acls': fake_acls_del + [fake_acl_save]})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_pg):
+            cmd = commands.DelACLBySGruleIDCommand(
+                self.ovn_api, 'fake-sg', fake_sg_rule_id, if_exists=True)
+            cmd.run_idl(self.transaction)
+
+        # ``FakeOvsdbRow`` deep copies its attrs, so assert on what was
+        # handed to ``delvalue``.
+        deleted = [call.args[1] for call in fake_pg.delvalue.mock_calls]
+        self.assertEqual(2, len(deleted))
+        for acl in deleted:
+            self.assertEqual(
+                fake_sg_rule_id,
+                acl.external_ids[ovn_const.OVN_SG_RULE_EXT_ID_KEY])
+            acl.delete.assert_called_once_with()
+
+    def test_acl_del_by_sg_rule_id_no_match(self):
+        fake_acl_save = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'external_ids': {
+                ovn_const.OVN_SG_RULE_EXT_ID_KEY: 'other-sg-rule-id'}})
+        fake_pg = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'acls': [fake_acl_save]})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_pg):
+            cmd = commands.DelACLBySGruleIDCommand(
+                self.ovn_api, 'fake-sg', 'fake-sg-rule-id', if_exists=True)
+            cmd.run_idl(self.transaction)
+
+        fake_pg.delvalue.assert_not_called()
+        for acl in fake_pg.acls:
+            acl.delete.assert_not_called()
+
+
 class TestAddStaticRouteCommand(TestBaseCommand):
 
     def test_lrouter_not_found(self):

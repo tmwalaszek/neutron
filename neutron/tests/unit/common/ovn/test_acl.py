@@ -305,3 +305,38 @@ class TestACLs(base.BaseTestCase):
         sg_rule['direction'] = 'egress'
         match = ovn_acl.acl_remote_group_id(sg_rule, ip_version)
         self.assertEqual(' && ip4.dst == $' + pg_name, match)
+
+    def test_sg_rule_acl_changed(self):
+        rule = fakes.FakeSecurityGroupRule.create_one_security_group_rule({
+            'direction': 'ingress',
+            'ethertype': 'IPv4',
+            'protocol': 'tcp',
+            'port_range_min': 22,
+            'port_range_max': 22,
+            'remote_ip_prefix': '10.0.0.0/24',
+            'normalized_cidr': '10.0.0.0/24',
+            'remote_group_id': None,
+            'remote_address_group_id': None,
+        }).info()
+
+        self.assertFalse(ovn_acl.sg_rule_acl_changed(rule, dict(rule)))
+
+        self.assertFalse(ovn_acl.sg_rule_acl_changed(
+            dict(rule, description='before'),
+            dict(rule, description='after')))
+
+        self.assertFalse(ovn_acl.sg_rule_acl_changed(
+            rule, dict(rule, remote_ip_prefix='10.0.0.5/24')))
+
+        for field, value in (('direction', 'egress'),
+                             ('ethertype', 'IPv6'),
+                             ('protocol', 'udp'),
+                             ('port_range_min', 1),
+                             ('port_range_max', 100),
+                             ('normalized_cidr', '192.168.0.0/24'),
+                             ('remote_group_id', 'other-sg-id'),
+                             ('remote_address_group_id', 'other-ag-id')):
+            changed = dict(rule, **{field: value})
+            self.assertTrue(
+                ovn_acl.sg_rule_acl_changed(rule, changed),
+                'change to %s should rewrite the ACL' % field)

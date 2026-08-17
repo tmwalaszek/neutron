@@ -634,6 +634,53 @@ class TestNbApi(BaseOvnIdlTest):
                             'ACL with sg_rule_id should be removed after '
                             'delete')
 
+    def test_delete_acl_by_sg_id_several_acls(self):
+        """``delete_acl_by_sg_id`` removes every register of the SG rule."""
+        sg_id = uuidutils.generate_uuid()
+        sg_rule_id = uuidutils.generate_uuid()
+        other_sg_rule_id = uuidutils.generate_uuid()
+        pg_name = ovn_utils.ovn_port_group_name(sg_id)
+        external_ids = {ovn_const.OVN_SG_EXT_ID_KEY: sg_id}
+
+        def _acl(match, rule_id):
+            return {
+                'port_group': pg_name,
+                'priority': ovn_const.ACL_PRIORITY_ALLOW,
+                'action': ovn_const.ACL_ACTION_ALLOW_RELATED,
+                'direction': 'to-lport',
+                'match': match,
+                ovn_const.OVN_SG_RULE_EXT_ID_KEY: rule_id,
+            }
+
+        with self.nbapi.transaction(check_error=True) as txn:
+            txn.add(self.nbapi.pg_add(name=pg_name, acls=[],
+                                      external_ids=external_ids))
+            txn.add(self.nbapi.pg_acl_add(
+                **_acl(f'outport == @{pg_name} && ip4 && ip4.src == '
+                       f'10.0.0.0/24', sg_rule_id), may_exist=True))
+            txn.add(self.nbapi.pg_acl_add(
+                **_acl(f'outport == @{pg_name} && ip4 && ip4.src == '
+                       f'192.168.0.0/24', sg_rule_id), may_exist=True))
+            txn.add(self.nbapi.pg_acl_add(
+                **_acl(f'outport == @{pg_name} && ip6', other_sg_rule_id),
+                may_exist=True))
+
+        def _acls_of(rule_id):
+            port_group = self.nbapi.get_port_group(pg_name)
+            self.assertIsNotNone(port_group)
+            return [a for a in port_group.acls
+                    if (getattr(a, 'external_ids', {}).get(
+                        ovn_const.OVN_SG_RULE_EXT_ID_KEY) == rule_id)]
+
+        self.assertEqual(2, len(_acls_of(sg_rule_id)))
+
+        self.nbapi.delete_acl_by_sg_id(sg_id, sg_rule_id).execute(
+            check_error=True)
+
+        self.assertEqual([], _acls_of(sg_rule_id),
+                         'every ACL of the SG rule should be removed')
+        self.assertEqual(1, len(_acls_of(other_sg_rule_id)))
+
     def test_delete_acl_by_sg_id_port_group_missing(self):
         """Try to delete an ACL in a missing port group, no exception raised"""
         sg_id = uuidutils.generate_uuid()
