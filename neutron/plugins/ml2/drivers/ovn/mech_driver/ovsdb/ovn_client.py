@@ -2867,14 +2867,26 @@ class OVNClient:
 
     def create_security_group_rule(self, context, rule, txn=None):
         self._process_security_group_rule(context, rule, txn=txn)
-        db_rev.bump_revision(
-            context, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
+        # Caller owns the commit when txn is given, so it bumps the
+        # revision, not us.
+        if txn is None:
+            db_rev.bump_revision(
+                context, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
     def delete_security_group_rule(self, context, rule, txn=None):
         self._process_security_group_rule(context, rule, is_add_acl=False,
                                           txn=txn)
         db_rev.delete_revision(
             context, rule['id'], ovn_const.TYPE_SECURITY_GROUP_RULES)
+
+    def update_security_group_rule(self, context, original_rule,
+                                   updated_rule, txn=None):
+        # Don't chain delete_security_group_rule()+create_security_group_rule
+        # here, that would delete_revision() a rule that's still live.
+        # Caller bumps the revision once the txn commits.
+        self._process_security_group_rule(context, original_rule,
+                                          is_add_acl=False, txn=txn)
+        self._process_security_group_rule(context, updated_rule, txn=txn)
 
     def _checkout_ip_list(self, addresses):
         """Return address map for addresses.

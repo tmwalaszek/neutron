@@ -429,6 +429,9 @@ class SecurityGroupRuleAPITestCase(base.PolicyBaseTestCase):
     def override_create_security_group_rule(self):
         self._override_security_group_rule('create_security_group_rule')
 
+    def override_update_security_group_rule(self):
+        self._override_security_group_rule('update_security_group_rule')
+
     def override_delete_security_group_rule(self):
         self._override_security_group_rule('delete_security_group_rule')
 
@@ -471,6 +474,16 @@ class SystemAdminSecurityGroupRuleTests(SecurityGroupRuleAPITestCase):
             base_policy.InvalidScope,
             policy.enforce,
             self.context, 'get_security_group_rule', self.alt_target)
+
+    def test_update_security_group_rule(self):
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.target)
+        self.assertRaises(
+            base_policy.InvalidScope,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.alt_target)
 
     def test_delete_security_group_rule(self):
         self.assertRaises(
@@ -527,6 +540,23 @@ class AdminSecurityGroupRuleTests(SecurityGroupRuleAPITestCase):
         self.assertTrue(
             policy.enforce(self.context,
                            'get_security_group_rule', self.alt_target))
+
+    def test_update_security_group_rule(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_security_group_rule', self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_security_group_rule', self.alt_target))
+
+    def test_update_security_group_rule_default_sg(self):
+        self.override_update_security_group_rule()
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_security_group_rule', self.target))
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_security_group_rule', self.alt_target))
 
     def test_delete_security_group_rule(self):
         self.assertTrue(
@@ -591,6 +621,38 @@ class ProjectManagerSecurityGroupRuleTests(AdminSecurityGroupRuleTests):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'get_security_group_rule', self.alt_target)
+
+    def test_update_security_group_rule(self):
+        self.assertTrue(
+            policy.enforce(self.context,
+                           'update_security_group_rule', self.target))
+        self.plugin_mock.get_security_group.return_value = self.alt_sg
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.alt_target)
+
+        # Test for the SG_OWNER different then current user case:
+        target = copy.copy(self.target)
+        target['security_group_id'] = self.alt_sg['id']
+        target['ext_parent:project_id'] = self.alt_sg['project_id']
+        target['ext_parent_security_group_id'] = self.alt_sg['id']
+        self.plugin_mock.get_security_group.return_value = self.alt_sg
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', target)
+
+    def test_update_security_group_rule_default_sg(self):
+        self.override_update_security_group_rule()
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.alt_target)
 
     def test_delete_security_group_rule(self):
         self.assertTrue(
@@ -659,6 +721,26 @@ class ProjectReaderSecurityGroupRuleTests(ProjectMemberSecurityGroupRuleTests):
             policy.enforce,
             self.context, 'create_security_group_rule', target)
 
+    def test_update_security_group_rule(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.target)
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.alt_target)
+        # Test for the SG_OWNER different then current user case:
+        target = copy.copy(self.target)
+        target['security_group_id'] = self.alt_sg['id']
+        target['ext_parent:project_id'] = self.alt_sg['project_id']
+        target['ext_parent_security_group_id'] = self.alt_sg['id']
+        self.plugin_mock.get_security_group.return_value = self.alt_sg
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', target)
+
     def test_delete_security_group_rule(self):
         self.assertRaises(
             base_policy.PolicyNotAuthorized,
@@ -697,6 +779,12 @@ class ServiceRoleSecurityGroupRuleTests(SecurityGroupRuleAPITestCase):
             base_policy.PolicyNotAuthorized,
             policy.enforce,
             self.context, 'get_security_group_rule', self.target)
+
+    def test_update_security_group_rule(self):
+        self.assertRaises(
+            base_policy.PolicyNotAuthorized,
+            policy.enforce,
+            self.context, 'update_security_group_rule', self.target)
 
     def test_delete_security_group_rule(self):
         self.assertRaises(
