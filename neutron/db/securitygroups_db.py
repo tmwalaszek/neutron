@@ -1107,8 +1107,8 @@ class SecurityGroupDbMixin(
     # immutable, changing them would change the rule's identity, not just
     # one of its parameters.
     UPDATABLE_RULE_FIELDS = ('protocol', 'remote_ip_prefix',
-                             'port_range_min', 'port_range_max',
-                             'description')
+                             'remote_group_id', 'port_range_min',
+                             'port_range_max', 'description')
 
     @db_api.retry_if_session_inactive()
     def update_security_group_rule(self, context, id, security_group_rule):
@@ -1126,12 +1126,23 @@ class SecurityGroupDbMixin(
 
             # Validate the merged (existing + patch) rule, not just the
             # patch, so cross-field checks still see the full picture.
+            # remote_ip_prefix/remote_group_id/remote_address_group_id
+            # remain mutually exclusive, so switching from one to another
+            # requires explicitly clearing the previous one (e.g.
+            # remote_ip_prefix: null) in the same request.
             merged_rule = copy.copy(original_rule)
             merged_rule.update({k: v for k, v in rule_data.items()
                                 if k in self.UPDATABLE_RULE_FIELDS})
             self._validate_base_security_group_rule_attributes(merged_rule)
 
             requested_fields = set(rule_data) & set(self.UPDATABLE_RULE_FIELDS)
+
+            remote_group_id = merged_rule.get('remote_group_id')
+            if 'remote_group_id' in requested_fields and remote_group_id:
+                self._check_security_group(
+                    context, remote_group_id,
+                    project_id=original_rule['project_id'])
+
             # port_range_min/max are validated as a pair, so persist both
             # if either is requested, or we'd leave a stale value behind.
             if requested_fields & {'port_range_min', 'port_range_max'}:

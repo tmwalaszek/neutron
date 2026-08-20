@@ -1187,6 +1187,77 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                     self.assertEqual(rule['security_group_rule'][key],
                                      res['security_group_rule'][key])
 
+    def test_update_security_group_rule_remote_group_id(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg, \
+                self.security_group(name, description) as remote_sg:
+            security_group_id = sg['security_group']['id']
+            remote_sg_id = remote_sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id,
+                    remote_ip_prefix='10.0.0.0/24') as rule:
+                rule_id = rule['security_group_rule']['id']
+
+                # remote_ip_prefix and remote_group_id are mutually
+                # exclusive, so switching without explicitly clearing the
+                # old one is rejected.
+                data = {'security_group_rule': {
+                    'remote_group_id': remote_sg_id}}
+                req = self.new_update_request(
+                    'security-group-rules', data, rule_id)
+                res = req.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPBadRequest.code,
+                                 res.status_int)
+
+                data = {'security_group_rule': {
+                    'remote_ip_prefix': None,
+                    'remote_group_id': remote_sg_id}}
+                req = self.new_update_request(
+                    'security-group-rules', data, rule_id)
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    remote_sg_id,
+                    res['security_group_rule']['remote_group_id'])
+                self.assertIsNone(
+                    res['security_group_rule']['remote_ip_prefix'])
+
+    def test_update_security_group_rule_remote_group_id_not_found(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(security_group_id) as rule:
+                data = {'security_group_rule': {
+                    'remote_group_id': uuidutils.generate_uuid()}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = req.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPNotFound.code,
+                                 res.status_int)
+
+    def test_update_security_group_rule_multiple_remote_entities(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg, \
+                self.security_group(name, description) as remote_sg:
+            security_group_id = sg['security_group']['id']
+            remote_sg_id = remote_sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id,
+                    remote_ip_prefix='10.0.0.0/24') as rule:
+                data = {'security_group_rule': {
+                    'remote_ip_prefix': '192.168.0.0/24',
+                    'remote_group_id': remote_sg_id}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = req.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPBadRequest.code,
+                                 res.status_int)
+
     def test_update_security_group_rule_port_range(self):
         name = 'webservers'
         description = 'my webservers'
