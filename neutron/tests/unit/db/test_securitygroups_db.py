@@ -21,6 +21,7 @@ from neutron_lib.callbacks import resources
 from neutron_lib import constants
 from neutron_lib import context
 from neutron_lib.objects import exceptions as obj_exc
+from oslo_utils import uuidutils
 import sqlalchemy
 import testtools
 
@@ -29,6 +30,7 @@ from neutron.db import securitygroups_db
 from neutron.extensions import security_groups_default_rules as \
     ext_sg_default_rules
 from neutron.extensions import securitygroup
+from neutron.objects import address_group as ag_obj
 from neutron import quota
 from neutron.services.revisions import revision_plugin
 from neutron.tests.unit import testlib_api
@@ -210,6 +212,166 @@ class SecurityGroupDbMixinTestCase(testlib_api.SqlTestCase):
         with testtools.ExpectedException(
                 securitygroup.SecurityGroupRuleNotFound):
             self.mixin.delete_security_group_rule(self.ctx, 'foo_rule')
+
+    def _create_security_group(self):
+        return self.mixin.create_security_group(
+            self.ctx, {'security_group': {
+                'project_id': 'fake', 'description': 'fake', 'name': 'fake'}})
+
+    def _create_address_group(self):
+        ag = ag_obj.AddressGroup(
+            self.ctx, id=uuidutils.generate_uuid(), project_id='fake',
+            name='fake', description='fake')
+        ag.create()
+        return ag
+
+    def _create_tcp_rule(self, security_group_id, port_range_min=1,
+                         port_range_max=100,
+                         remote_ip_prefix='10.0.0.0/24',
+                         remote_address_group_id=None):
+        rule = {'security_group_rule': {
+            'project_id': 'fake',
+            'security_group_id': security_group_id,
+            'direction': 'ingress',
+            'ethertype': 'IPv4',
+            'protocol': 'tcp',
+            'port_range_min': port_range_min,
+            'port_range_max': port_range_max,
+            'remote_ip_prefix': remote_ip_prefix,
+            'remote_group_id': None,
+            'remote_address_group_id': remote_address_group_id,
+            'description': None,
+        }}
+        return self.mixin.create_security_group_rule(self.ctx, rule)
+
+    def test_update_security_group_rule(self):
+        sg = self._create_security_group()
+        rule = self._create_tcp_rule(sg['id'])
+        updated = self.mixin.update_security_group_rule(
+            self.ctx, rule['id'],
+            {'security_group_rule': {'remote_ip_prefix': '192.168.0.0/24'}})
+        self.assertEqual('192.168.0.0/24', updated['remote_ip_prefix'])
+        # Untouched fields stay as-is.
+        self.assertEqual(rule['direction'], updated['direction'])
+        self.assertEqual(rule['protocol'], updated['protocol'])
+        self.assertEqual(rule['port_range_min'], updated['port_range_min'])
+        self.assertEqual(rule['port_range_max'], updated['port_range_max'])
+
+    def test_update_security_group_rule_raise_error_on_not_found(self):
+        with testtools.ExpectedException(
+                securitygroup.SecurityGroupRuleNotFound):
+            self.mixin.update_security_group_rule(
+                self.ctx, 'foo_rule',
+                {'security_group_rule': {
+                    'remote_ip_prefix': '10.0.0.0/24'}})
+
+    def test_update_security_group_rule_conflict(self):
+        sg = self._create_security_group()
+        rule = self._create_tcp_rule(sg['id'])
+        with mock.patch.object(registry, "publish") as mock_publish:
+            mock_publish.side_effect = exceptions.CallbackFailure(Exception())
+            with testtools.ExpectedException(
+                    securitygroup.SecurityGroupConflict):
+                self.mixin.update_security_group_rule(
+                    self.ctx, rule['id'],
+                    {'security_group_rule': {
+                        'remote_ip_prefix': '10.0.0.0/24'}})
+
+    def test_update_security_group_rule_duplicate_excludes_self(self):
+        sg = self._create_security_group()
+        rule1 = self._create_tcp_rule(sg['id'],
+                                      remote_ip_prefix='10.0.0.0/24')
+        rule2 = self._create_tcp_rule(sg['id'],
+                                      remote_ip_prefix='10.0.1.0/24')
+
+        # Colliding with a different, still-existing rule is rejected.
+        with testtools.ExpectedException(
+                securitygroup.SecurityGroupRuleExists):
+            self.mixin.update_security_group_rule(
+                self.ctx, rule2['id'],
+                {'security_group_rule': {
+                    'remote_ip_prefix': '10.0.0.0/24'}})
+
+        # exclude_rule_id must exclude the rule's own old version.
+        updated = self.mixin.update_security_group_rule(
+            self.ctx, rule1['id'],
+            {'security_group_rule': {'remote_ip_prefix': '10.0.0.0/24'}})
+        self.assertEqual('10.0.0.0/24', updated['remote_ip_prefix'])
+
+    def test_update_security_group_rule_port_range_collapse(self):
+        # Patching only port_range_max to "entire range" must also
+        # collapse port_range_min, not leave it stale.
+        sg = self._create_security_group()
+        rule = self._create_tcp_rule(
+            sg['id'], port_range_min=constants.PORT_RANGE_MIN,
+            port_range_max=100)
+        updated = self.mixin.update_security_group_rule(
+            self.ctx, rule['id'],
+            {'security_group_rule': {
+                'port_range_max': constants.PORT_RANGE_MAX}})
+        self.assertIsNone(updated['port_range_min'])
+        self.assertIsNone(updated['port_range_max'])
+
+        # Returned dict must match what's actually persisted.
+        persisted = self.mixin.get_security_group_rule(self.ctx, rule['id'])
+        self.assertIsNone(persisted['port_range_min'])
+        self.assertIsNone(persisted['port_range_max'])
+
+    def test_update_security_group_rule_remote_group_requires_clear(self):
+        # remote_ip_prefix and remote_group_id are mutually exclusive, so
+        # switching without explicitly clearing the old one is rejected.
+        sg = self._create_security_group()
+        remote_sg = self._create_security_group()
+        rule = self._create_tcp_rule(sg['id'])
+        with testtools.ExpectedException(
+                securitygroup.SecurityGroupMultipleRemoteEntites):
+            self.mixin.update_security_group_rule(
+                self.ctx, rule['id'],
+                {'security_group_rule': {
+                    'remote_group_id': remote_sg['id']}})
+
+        # Explicitly clearing remote_ip_prefix in the same request works.
+        updated = self.mixin.update_security_group_rule(
+            self.ctx, rule['id'],
+            {'security_group_rule': {
+                'remote_ip_prefix': None,
+                'remote_group_id': remote_sg['id']}})
+        self.assertEqual(remote_sg['id'], updated['remote_group_id'])
+        self.assertIsNone(updated['remote_ip_prefix'])
+
+        persisted = self.mixin.get_security_group_rule(self.ctx, rule['id'])
+        self.assertEqual(remote_sg['id'], persisted['remote_group_id'])
+        self.assertIsNone(persisted['remote_ip_prefix'])
+
+    def test_update_security_group_rule_remote_group_id_not_found(self):
+        sg = self._create_security_group()
+        rule = self._create_tcp_rule(sg['id'], remote_ip_prefix=None)
+        with testtools.ExpectedException(securitygroup.SecurityGroupNotFound):
+            self.mixin.update_security_group_rule(
+                self.ctx, rule['id'],
+                {'security_group_rule': {
+                    'remote_group_id': 'nonexistent-sg-id'}})
+
+    def test_update_security_group_rule_remote_address_group_immutable(self):
+        # remote_address_group_id is deliberately left out of
+        # UPDATABLE_RULE_FIELDS, so an update leaves it alone;
+        # fields_no_update on the object blocks it as a second line of
+        # defence. The API keeps it read-only too, see the next phase.
+        sg = self._create_security_group()
+        ag = self._create_address_group()
+        rule = self._create_tcp_rule(sg['id'], remote_ip_prefix=None,
+                                     remote_address_group_id=ag['id'])
+        other_ag = self._create_address_group()
+        updated = self.mixin.update_security_group_rule(
+            self.ctx, rule['id'],
+            {'security_group_rule': {
+                'remote_address_group_id': other_ag['id'],
+                'description': 'touched'}})
+        self.assertEqual('touched', updated['description'])
+        self.assertEqual(ag['id'], updated['remote_address_group_id'])
+
+        persisted = self.mixin.get_security_group_rule(self.ctx, rule['id'])
+        self.assertEqual(ag['id'], persisted['remote_address_group_id'])
 
     def test_validate_ethertype_and_protocol(self):
         fake_ipv4_rules = [{'protocol': constants.PROTO_NAME_IPV6_ICMP,
