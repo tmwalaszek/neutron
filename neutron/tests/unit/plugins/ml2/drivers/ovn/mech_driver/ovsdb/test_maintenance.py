@@ -381,6 +381,53 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
     def test_fix_address_group_update(self):
         self._test_fix_create_update_address_group(ovn_rev=5, neutron_rev=7)
 
+    @mock.patch.object(maintenance.DBInconsistenciesPeriodics,
+                       '_fix_security_group_rule')
+    def test__fix_create_update_security_group_rule_dispatch(self,
+                                                             mock_fix_sgr):
+        # SG rules skip the generic ovn_get/create/update dispatch,
+        # get_acl_by_id can't tell a stale ACL from a fresh one.
+        rule = {'id': 'sgr_id', 'security_group_id': 'sg_id'}
+        row = mock.Mock(resource_type=constants.TYPE_SECURITY_GROUP_RULES,
+                        resource_uuid='sgr_id')
+        self.fake_ovn_client._plugin.get_security_group_rule.\
+            return_value = rule
+        self.periodic._fix_create_update(self.ctx, row)
+        mock_fix_sgr.assert_called_once_with(self.ctx, rule)
+        self.fake_ovn_client._nb_idl.get_acl_by_id.assert_not_called()
+
+    def test__fix_security_group_rule(self):
+        sg = self._make_security_group(
+            self.fmt, 'sg1', 'sg1')['security_group']
+        rule_req = self._build_security_group_rule(
+            sg['id'], 'ingress', n_const.PROTO_NAME_TCP, '22', '22')
+        rule = self.deserialize(
+            self.fmt, self._create_security_group_rule(
+                self.fmt, rule_req))['security_group_rule']
+        # revision_number needs standard-attr-revisions, not loaded here.
+        rule['revision_number'] = 0
+
+        with db_api.CONTEXT_WRITER.using(self.ctx):
+            ovn_revision_numbers_db.create_initial_revision(
+                self.ctx, rule['id'], constants.TYPE_SECURITY_GROUP_RULES)
+
+        fake_txn = mock.MagicMock()
+        self.fake_ovn_client._nb_idl.transaction.return_value.__enter__.\
+            return_value = fake_txn
+        fake_del_cmd = self.fake_ovn_client._nb_idl.delete_acl_by_sg_id.\
+            return_value
+
+        self.periodic._fix_security_group_rule(self.ctx, rule)
+
+        self.fake_ovn_client._nb_idl.delete_acl_by_sg_id.\
+            assert_called_once_with(sg['id'], rule['id'], if_exists=True)
+        fake_txn.add.assert_called_once_with(fake_del_cmd)
+        self.fake_ovn_client.create_security_group_rule.\
+            assert_called_once_with(self.ctx, rule, txn=fake_txn)
+
+        row = ovn_revision_numbers_db.get_revision_row(self.ctx, rule['id'])
+        self.assertEqual(rule['revision_number'], row.revision_number)
+
     @mock.patch.object(maintenance, 'LOG')
     def test__fix_create_update_no_sttd_attr(self, mock_log):
         row_net = ovn_models.OVNRevisionNumbers(
