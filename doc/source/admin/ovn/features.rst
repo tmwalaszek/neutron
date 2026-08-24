@@ -285,6 +285,8 @@ The following Neutron API extensions are supported with OVN:
      - security-groups-remote-address-group
    * - Security Groups Rules Belongs to Default SG
      - security-groups-rules-belongs-to-default-sg
+   * - Security Group Rules Update
+     - security-groups-rules-update
    * - Security Groups Shared Filtering
      - security-groups-shared-filtering
    * - Sorting

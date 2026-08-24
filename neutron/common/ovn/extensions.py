@@ -114,6 +114,7 @@ from neutron_lib import constants
 
 from neutron.extensions import quotasv2_detail
 from neutron.extensions import security_groups_default_rules
+from neutron.extensions import security_groups_rules_update
 # NOTE(russellb) This remains in its own file (vs constants.py) because we want
 # to be able to easily import it and export the info without any dependencies
 # on external imports.
@@ -203,6 +204,7 @@ ML2_SUPPORTED_API_EXTENSIONS = [
     security_groups_normalized_cidr.ALIAS,
     security_groups_remote_address_group.ALIAS,
     security_groups_rules_belongs_to_default_sg.ALIAS,
+    security_groups_rules_update.ALIAS,
     security_groups_shared_filtering.ALIAS,
     stateful_security_group.ALIAS,
     'standard-attr-description',
