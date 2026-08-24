@@ -183,9 +183,12 @@ class SecurityGroupRule(base.NeutronDbObject):
 
     foreign_keys = {'SecurityGroup': {'security_group_id': 'id'}}
 
+    # NOTE: remote_address_group_id stays here because neutron-lib's
+    # security_groups_remote_address_group API definition declares it
+    # allow_put=False. Making it updatable needs that definition changed
+    # first, otherwise the object would accept what the API rejects.
     fields_no_update = ['project_id',
                         'security_group_id',
-                        'remote_group_id',
                         'remote_address_group_id',
                         'belongs_to_default_sg',
                         ]
