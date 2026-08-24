@@ -38,6 +38,7 @@ from neutron.agent.linux import utils as linux_utils
 from neutron.agent import securitygroups_rpc as sg_rpc
 from neutron.api.rpc.handlers import securitygroups_rpc
 from neutron.db import securitygroups_rpc_base as sg_db_rpc
+from neutron.extensions import security_groups_rules_update as sg_rules_update
 from neutron.extensions import securitygroup as ext_sg
 from neutron.tests import base
 from neutron.tests.unit.extensions import test_securitygroup as test_sg
@@ -3458,7 +3459,7 @@ class TestSecurityGroupExtensionControl(base.BaseTestCase):
         exp_aliases = ['dummy1', 'dummy2']
         ext_aliases = [
             'dummy1', 'security-group', 'dummy2',
-            sg_ds_def.ALIAS,
+            sg_ds_def.ALIAS, sg_rules_update.ALIAS,
         ]
         sg_rpc.disable_security_group_extension_by_config(ext_aliases)
         self.assertEqual(ext_aliases, exp_aliases)

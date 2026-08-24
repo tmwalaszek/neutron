@@ -146,6 +146,8 @@ from neutron.extensions import filter_validation
 from neutron.extensions import qinq
 from neutron.extensions import security_groups_default_rules as \
         sg_default_rules_ext
+from neutron.extensions import security_groups_rules_update as \
+        sg_rules_update
 from neutron.extensions import vlantransparent
 from neutron.ipam import exceptions as ipam_exc
 from neutron.objects import base as base_obj
@@ -241,6 +243,7 @@ class Ml2Plugin(db_base_plugin_v2.NeutronDbPluginV2,
                                     security_groups_normalized_cidr.ALIAS,
                                     security_groups_port_filtering.ALIAS,
                                     security_groups_remote_address_group.ALIAS,
+                                    sg_rules_update.ALIAS,
                                     security_groups_shared_filtering.ALIAS,
                                     empty_string_filtering.ALIAS,
                                     filter_apidef.ALIAS,
