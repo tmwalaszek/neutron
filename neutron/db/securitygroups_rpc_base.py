@@ -74,6 +74,13 @@ class SecurityGroupServerNotifierRpcMixin(sg_db.SecurityGroupDbMixin):
         self.notifier.security_groups_rule_updated(context, list(sgids))
         return rules
 
+    def update_security_group_rule(self, context, id, security_group_rule):
+        rule = super().update_security_group_rule(
+            context, id, security_group_rule)
+        sgids = [rule['security_group_id']]
+        self.notifier.security_groups_rule_updated(context, sgids)
+        return rule
+
     def delete_security_group_rule(self, context, sgrid):
         rule = self.get_security_group_rule(context, sgrid)
         super().delete_security_group_rule(context, sgrid)

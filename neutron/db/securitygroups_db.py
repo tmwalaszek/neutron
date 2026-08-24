@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import copy
+
 import netaddr
 from neutron_lib.api.definitions import port as port_def
 from neutron_lib.api import extensions
@@ -992,7 +994,8 @@ class SecurityGroupDbMixin(
                          for x in comparison_keys])
 
     def _check_for_duplicate_rules(self, context, security_group_id,
-                                   new_security_group_rules):
+                                   new_security_group_rules,
+                                   exclude_rule_id=None):
         # First up, check for any duplicates in the new rules.
         new_rules_set = set()
         for i in new_security_group_rules:
@@ -1004,10 +1007,13 @@ class SecurityGroupDbMixin(
         # Now, let's make sure none of the new rules conflict with
         # existing rules; note that we do *not* store the db rules
         # in the set, as we assume they were already checked,
-        # when added.
+        # when added. exclude_rule_id skips the rule's own pre-image
+        # during an update.
         sg = self.get_security_group(context, security_group_id)
         if sg:
             for i in sg['security_group_rules']:
+                if exclude_rule_id and i.get('id') == exclude_rule_id:
+                    continue
                 rule_key = self._rule_to_key(i)
                 if rule_key in new_rules_set:
                     raise ext_sg.SecurityGroupRuleExists(rule_id=i.get('id'))
@@ -1096,6 +1102,93 @@ class SecurityGroupDbMixin(
         if sgr is None:
             raise ext_sg.SecurityGroupRuleNotFound(id=id)
         return sgr
+
+    # Fields updatable via PUT. security_group_id/direction/ethertype stay
+    # immutable, changing them would change the rule's identity, not just
+    # one of its parameters.
+    UPDATABLE_RULE_FIELDS = ('protocol', 'remote_ip_prefix',
+                             'remote_group_id', 'port_range_min',
+                             'port_range_max', 'description')
+
+    @db_api.retry_if_session_inactive()
+    def update_security_group_rule(self, context, id, security_group_rule):
+        rule_data = security_group_rule['security_group_rule']
+
+        self._registry_publish(
+            resources.SECURITY_GROUP_RULE, events.BEFORE_UPDATE,
+            exc_cls=ext_sg.SecurityGroupConflict, id=id,
+            payload=events.DBEventPayload(
+                context, resource_id=id, request_body=rule_data))
+
+        with db_api.CONTEXT_WRITER.using(context):
+            sg_rule = self._get_security_group_rule(context, id)
+            original_rule = self._make_security_group_rule_dict(sg_rule)
+
+            # Validate the merged (existing + patch) rule, not just the
+            # patch, so cross-field checks still see the full picture.
+            # remote_ip_prefix/remote_group_id/remote_address_group_id
+            # remain mutually exclusive, so switching from one to another
+            # requires explicitly clearing the previous one (e.g.
+            # remote_ip_prefix: null) in the same request.
+            merged_rule = copy.copy(original_rule)
+            merged_rule.update({k: v for k, v in rule_data.items()
+                                if k in self.UPDATABLE_RULE_FIELDS})
+            self._validate_base_security_group_rule_attributes(merged_rule)
+
+            requested_fields = set(rule_data) & set(self.UPDATABLE_RULE_FIELDS)
+
+            remote_group_id = merged_rule.get('remote_group_id')
+            if 'remote_group_id' in requested_fields and remote_group_id:
+                self._check_security_group(
+                    context, remote_group_id,
+                    project_id=original_rule['project_id'])
+
+            # port_range_min/max are validated as a pair, so persist both
+            # if either is requested, or we'd leave a stale value behind.
+            if requested_fields & {'port_range_min', 'port_range_max'}:
+                requested_fields |= {'port_range_min', 'port_range_max'}
+            update_fields = {key: merged_rule[key]
+                             for key in requested_fields}
+            remote_ip_prefix = update_fields.get('remote_ip_prefix')
+            if remote_ip_prefix:
+                update_fields['remote_ip_prefix'] = net.AuthenticIPNetwork(
+                    remote_ip_prefix)
+            if 'port_range_min' in update_fields:
+                update_fields['port_range_min'] = self._safe_int(
+                    update_fields['port_range_min'])
+            if 'port_range_max' in update_fields:
+                update_fields['port_range_max'] = self._safe_int(
+                    update_fields['port_range_max'])
+
+            # Re-check duplicates against the merged rule so the update
+            # can't produce a rule that collides with a sibling rule.
+            self._check_for_duplicate_rules(
+                context, original_rule['security_group_id'],
+                [{'security_group_rule': merged_rule}], exclude_rule_id=id)
+
+            sg_rule.update_fields(update_fields)
+            sg_rule.update()
+
+            # fetch sg_rule from db to load the sg rules with sg model
+            # otherwise a DetachedInstanceError can occur for model
+            # extensions
+            sg_rule = sg_obj.SecurityGroupRule.get_object(context, id=id)
+            updated_rule = self._make_security_group_rule_dict(sg_rule)
+            self._registry_publish(
+                resources.SECURITY_GROUP_RULE,
+                events.PRECOMMIT_UPDATE,
+                exc_cls=ext_sg.SecurityGroupConflict,
+                payload=events.DBEventPayload(
+                    context, resource_id=id, request_body=rule_data,
+                    states=(original_rule,), desired_state=updated_rule))
+
+        registry.publish(
+            resources.SECURITY_GROUP_RULE, events.AFTER_UPDATE, self,
+            payload=events.DBEventPayload(
+                context, resource_id=id, request_body=rule_data,
+                states=(original_rule, updated_rule)))
+
+        return updated_rule
 
     @db_api.retry_if_session_inactive()
     def delete_security_group_rule(self, context, id):
