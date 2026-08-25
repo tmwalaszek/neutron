@@ -256,6 +256,14 @@ def _add_sg_rule_acl_for_port_group(port_group, stateful, r):
     return add_sg_rule_acl_for_port_group(port_group, r, stateful, match)
 
 
+def sg_rule_acl_changed(original_rule, updated_rule):
+    """Check whether two SG rule dicts build a different ACL register."""
+    # The port group name and the stateful flag come from the security
+    # group, which a rule update cannot change, so any fixed value does.
+    return (_add_sg_rule_acl_for_port_group('pg', True, original_rule) !=
+            _add_sg_rule_acl_for_port_group('pg', True, updated_rule))
+
+
 def _acl_columns_name_severity_supported(nb_idl):
     columns = list(nb_idl._tables['ACL'].columns)
     return ('name' in columns) and ('severity' in columns)
@@ -282,7 +290,8 @@ def update_acls_for_security_group(plugin,
                                    security_group_id,
                                    security_group_rule,
                                    is_add_acl=True,
-                                   stateless_supported=True):
+                                   stateless_supported=True,
+                                   txn=None):
 
     # Skip ACLs if security groups aren't enabled
     if not is_sg_enabled():
@@ -302,11 +311,16 @@ def update_acls_for_security_group(plugin,
         if not keep_name_severity:
             acl.pop('name')
             acl.pop('severity')
-        ovn.pg_acl_add(**acl, may_exist=True).execute(check_error=True)
+        cmd = ovn.pg_acl_add(**acl, may_exist=True)
     else:
-        ovn.pg_acl_del(acl['port_group'], acl['direction'],
-                       acl['priority'], acl['match']).execute(
-                           check_error=True)
+        cmd = ovn.pg_acl_del(acl['port_group'], acl['direction'],
+                             acl['priority'], acl['match'])
+
+    # Batch into caller's txn when given, so delete+add commit atomically.
+    if txn is not None:
+        txn.add(cmd)
+    else:
+        cmd.execute(check_error=True)
 
 
 def filter_acl_dict(acl, extra_fields=None):

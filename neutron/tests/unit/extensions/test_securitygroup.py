@@ -31,6 +31,7 @@ from neutron_lib import exceptions
 from neutron_lib.plugins import directory
 from oslo_config import cfg
 import oslo_db.exception as exc
+from oslo_utils import uuidutils
 import testtools
 import webob.exc
 
@@ -1150,6 +1151,183 @@ class TestSecurityGroups(SecurityGroupDBTestCase):
                                                        **remote)
                 res = self._create_security_group_rule(self.fmt, rule)
                 self.assertEqual(webob.exc.HTTPBadRequest.code, res.status_int)
+
+    def test_update_security_group_rule_remote_ip_prefix(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id,
+                    remote_ip_prefix='10.0.0.0/24') as rule:
+                data = {'security_group_rule': {
+                    'remote_ip_prefix': '192.168.0.0/24'}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    '192.168.0.0/24',
+                    res['security_group_rule']['remote_ip_prefix'])
+                # Fields not present in the PUT body are left untouched.
+                for key in ('direction', 'protocol', 'port_range_min',
+                           'port_range_max', 'security_group_id'):
+                    self.assertEqual(rule['security_group_rule'][key],
+                                     res['security_group_rule'][key])
+
+    def test_update_security_group_rule_remote_group_id(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg, \
+                self.security_group(name, description) as remote_sg:
+            security_group_id = sg['security_group']['id']
+            remote_group_id = remote_sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id,
+                    remote_ip_prefix='10.0.0.0/24') as rule:
+                data = {'security_group_rule': {
+                    'remote_group_id': remote_group_id,
+                    'remote_ip_prefix': None}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    remote_group_id,
+                    res['security_group_rule']['remote_group_id'])
+                self.assertIsNone(
+                    res['security_group_rule']['remote_ip_prefix'])
+
+    def test_update_security_group_rule_remote_group_id_not_found(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id,
+                    remote_ip_prefix='10.0.0.0/24') as rule:
+                data = {'security_group_rule': {
+                    'remote_group_id': uuidutils.generate_uuid(),
+                    'remote_ip_prefix': None}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = req.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPNotFound.code, res.status_int)
+
+    def test_update_security_group_rule_port_range(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id, port_range_min='22',
+                    port_range_max='22') as rule:
+                data = {'security_group_rule': {'port_range_max': '2222'}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    22, res['security_group_rule']['port_range_min'])
+                self.assertEqual(
+                    2222, res['security_group_rule']['port_range_max'])
+
+    def test_update_security_group_rule_not_found(self):
+        data = {'security_group_rule': {
+            'remote_ip_prefix': '192.168.0.0/24'}}
+        req = self.new_update_request(
+            'security-group-rules', data,
+            uuidutils.generate_uuid())
+        res = req.get_response(self.ext_api)
+        self.assertEqual(webob.exc.HTTPNotFound.code, res.status_int)
+
+    def test_update_security_group_rule_immutable_fields(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg, \
+                self.security_group(name, description) as remote_sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(security_group_id) as rule:
+                rule_id = rule['security_group_rule']['id']
+                for field, value in (
+                        ('direction', 'egress'),
+                        ('ethertype', const.IPv6),
+                        ('security_group_id',
+                         remote_sg['security_group']['id'])):
+                    data = {'security_group_rule': {field: value}}
+                    req = self.new_update_request(
+                        'security-group-rules', data, rule_id)
+                    res = req.get_response(self.ext_api)
+                    self.assertEqual(webob.exc.HTTPBadRequest.code,
+                                     res.status_int)
+
+    def test_update_security_group_rule_protocol(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(security_group_id) as rule:
+                data = {'security_group_rule': {
+                    'protocol': const.PROTO_NAME_UDP}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    const.PROTO_NAME_UDP,
+                    res['security_group_rule']['protocol'])
+                # Fields not present in the PUT body are left untouched.
+                for key in ('direction', 'remote_ip_prefix',
+                           'port_range_min', 'port_range_max',
+                           'security_group_id'):
+                    self.assertEqual(rule['security_group_rule'][key],
+                                     res['security_group_rule'][key])
+
+    def test_update_security_group_rule_protocol_required_with_ports(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id, protocol=None,
+                    port_range_min=None, port_range_max=None) as rule:
+                data = {'security_group_rule': {
+                    'port_range_min': '22', 'port_range_max': '2222'}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = req.get_response(self.ext_api)
+                self.assertEqual(webob.exc.HTTPBadRequest.code,
+                                 res.status_int)
+
+    def test_update_security_group_rule_protocol_and_ports_together(self):
+        name = 'webservers'
+        description = 'my webservers'
+        with self.security_group(name, description) as sg:
+            security_group_id = sg['security_group']['id']
+            with self.security_group_rule(
+                    security_group_id, protocol=None,
+                    port_range_min=None, port_range_max=None) as rule:
+                data = {'security_group_rule': {
+                    'protocol': const.PROTO_NAME_TCP,
+                    'port_range_min': '22', 'port_range_max': '2222'}}
+                req = self.new_update_request(
+                    'security-group-rules', data,
+                    rule['security_group_rule']['id'])
+                res = self.deserialize(self.fmt,
+                                       req.get_response(self.ext_api))
+                self.assertEqual(
+                    const.PROTO_NAME_TCP,
+                    res['security_group_rule']['protocol'])
+                self.assertEqual(
+                    22, res['security_group_rule']['port_range_min'])
+                self.assertEqual(
+                    2222, res['security_group_rule']['port_range_max'])
 
     def test_create_security_group_rule_port_range_min_max_limits(self):
         name = 'webservers'
