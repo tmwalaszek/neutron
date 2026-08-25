@@ -214,6 +214,18 @@ rules = [
             deprecated_since=versionutils.deprecated.WALLABY)
     ),
     policy.DocumentedRuleDefault(
+        name='update_security_group_rule',
+        check_str=base.ADMIN_OR_SG_OWNER_MEMBER,
+        scope_types=['project'],
+        description='Update a security group rule',
+        operations=[
+            {
+                'method': 'PUT',
+                'path': RULE_RESOURCE_PATH,
+            },
+        ],
+    ),
+    policy.DocumentedRuleDefault(
         name='delete_security_group_rule',
         check_str=base.ADMIN_OR_SG_OWNER_MEMBER,
         scope_types=['project'],

@@ -232,6 +232,13 @@ class TestOVNMechanismDriverBase(MechDriverSetupBase,
                     log_errors=processutils.LOG_FINAL_ERROR)
 
 
+# The ACL relevant fields, which an SG rule dict always carries.
+SGR_ACL_FIELDS = {'direction': 'ingress', 'ethertype': 'IPv4',
+                  'protocol': 'tcp', 'port_range_min': 22,
+                  'port_range_max': 22, 'remote_group_id': None,
+                  'remote_address_group_id': None}
+
+
 class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
     def test__get_max_tunid_no_key_set(self):
         self.mech_driver.nb_ovn.nb_global.options.get.return_value = None
@@ -339,7 +346,8 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             has_same_rules.assert_not_called()
             ovn_acl_up.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY,
-                'sg_id', rule, is_add_acl=True, stateless_supported=False)
+                'sg_id', rule, is_add_acl=True, stateless_supported=False,
+                txn=None)
             mock_bump.assert_called_once_with(
                 mock.ANY, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
@@ -360,7 +368,8 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             has_same_rules.assert_not_called()
             ovn_acl_up.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY,
-                'sg_id', rule, is_add_acl=True, stateless_supported=False)
+                'sg_id', rule, is_add_acl=True, stateless_supported=False,
+                txn=None)
             mock_bump.assert_called_once_with(
                 mock.ANY, rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
@@ -378,9 +387,104 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                     self.context, states=(rule,)))
             ovn_acl_up.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY,
-                'sg_id', rule, is_add_acl=False, stateless_supported=False)
+                'sg_id', rule, is_add_acl=False, stateless_supported=False,
+                txn=None)
             mock_delrev.assert_called_once_with(
                 mock.ANY, rule['id'], ovn_const.TYPE_SECURITY_GROUP_RULES)
+
+    @mock.patch.object(ovn_revision_numbers_db, 'bump_revision')
+    def test__process_sg_rule_notifications_sgr_update(self, mock_bump):
+        original_rule = dict(SGR_ACL_FIELDS, id='sgr_id',
+                             security_group_id='sg_id',
+                             remote_ip_prefix='10.0.0.0/24',
+                             normalized_cidr='10.0.0.0/24')
+        updated_rule = dict(SGR_ACL_FIELDS, id='sgr_id',
+                            security_group_id='sg_id',
+                            remote_ip_prefix='192.168.0.0/24',
+                            normalized_cidr='192.168.0.0/24')
+        with mock.patch.object(
+                self.mech_driver,
+                '_sg_has_rules_with_same_normalized_cidr',
+                return_value=False) as has_same_rules, \
+                mock.patch.object(
+                    ovn_acl, 'update_acls_for_security_group') as ovn_acl_up:
+            self.mech_driver._process_sg_rule_notification(
+                resources.SECURITY_GROUP_RULE, events.AFTER_UPDATE, {},
+                payload=events.DBEventPayload(
+                    self.context, states=(original_rule, updated_rule)))
+            has_same_rules.assert_called_once_with(original_rule)
+            # The old ACL is removed and the new one added, both within
+            # the same OVN NB transaction (a non-None txn on both calls).
+            ovn_acl_up.assert_has_calls([
+                mock.call(mock.ANY, mock.ANY, mock.ANY, 'sg_id',
+                          original_rule, is_add_acl=False,
+                          stateless_supported=False, txn=mock.ANY),
+                mock.call(mock.ANY, mock.ANY, mock.ANY, 'sg_id',
+                          updated_rule, is_add_acl=True,
+                          stateless_supported=False, txn=mock.ANY),
+            ])
+            # Both calls must share the same OVN NB transaction object -
+            # that is what makes the delete+add ACL pair atomic.
+            calls = ovn_acl_up.call_args_list
+            self.assertIs(calls[0].kwargs['txn'], calls[1].kwargs['txn'])
+            # The existing revision row is bumped once - never deleted
+            # and self-healed back via create_security_group_rule().
+            mock_bump.assert_called_once_with(
+                mock.ANY, updated_rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
+
+    @mock.patch.object(ovn_revision_numbers_db, 'bump_revision')
+    def test__process_sg_rule_notifications_sgr_update_skip_delete(
+            self, mock_bump):
+        # When another live rule still produces the exact same ACL as the
+        # rule's pre-image, that ACL must not be deleted out from under it.
+        original_rule = dict(SGR_ACL_FIELDS, id='sgr_id',
+                             security_group_id='sg_id',
+                             remote_ip_prefix='10.0.0.0/24',
+                             normalized_cidr='10.0.0.0/24')
+        updated_rule = dict(SGR_ACL_FIELDS, id='sgr_id',
+                            security_group_id='sg_id',
+                            remote_ip_prefix='192.168.0.0/24',
+                            normalized_cidr='192.168.0.0/24')
+        with mock.patch.object(
+                self.mech_driver,
+                '_sg_has_rules_with_same_normalized_cidr',
+                return_value=True), \
+                mock.patch.object(
+                    ovn_acl, 'update_acls_for_security_group') as ovn_acl_up:
+            self.mech_driver._process_sg_rule_notification(
+                resources.SECURITY_GROUP_RULE, events.AFTER_UPDATE, {},
+                payload=events.DBEventPayload(
+                    self.context, states=(original_rule, updated_rule)))
+            ovn_acl_up.assert_called_once_with(
+                mock.ANY, mock.ANY, mock.ANY, 'sg_id', updated_rule,
+                is_add_acl=True, stateless_supported=False, txn=mock.ANY)
+            mock_bump.assert_called_once_with(
+                mock.ANY, updated_rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
+
+    @mock.patch.object(ovn_revision_numbers_db, 'bump_revision')
+    def test__process_sg_rule_notifications_sgr_update_acl_unchanged(
+            self, mock_bump):
+        original_rule = dict(SGR_ACL_FIELDS, id='sgr_id',
+                             security_group_id='sg_id',
+                             remote_ip_prefix='10.0.0.0/24',
+                             normalized_cidr='10.0.0.0/24',
+                             description='before')
+        updated_rule = dict(original_rule, description='after')
+        with mock.patch.object(
+                self.mech_driver,
+                '_sg_has_rules_with_same_normalized_cidr') as has_same_rules, \
+                mock.patch.object(
+                    ovn_acl, 'update_acls_for_security_group') as ovn_acl_up:
+            self.mech_driver._process_sg_rule_notification(
+                resources.SECURITY_GROUP_RULE, events.AFTER_UPDATE, {},
+                payload=events.DBEventPayload(
+                    self.context, states=(original_rule, updated_rule)))
+            ovn_acl_up.assert_not_called()
+            has_same_rules.assert_not_called()
+            self.mech_driver._ovn_client._nb_idl.transaction.\
+                assert_not_called()
+            mock_bump.assert_called_once_with(
+                mock.ANY, updated_rule, ovn_const.TYPE_SECURITY_GROUP_RULES)
 
     def test__sg_has_rules_with_same_normalized_cidr(self):
         scenarios = [

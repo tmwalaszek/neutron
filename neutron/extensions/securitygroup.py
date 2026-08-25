@@ -248,22 +248,22 @@ RESOURCE_ATTRIBUTE_MAP = {
                               'is_sort_key': True, 'is_filter': True,
                               'validate': {
                                   'type:string': db_const.UUID_FIELD_SIZE}},
-        'remote_group_id': {'allow_post': True, 'allow_put': False,
+        'remote_group_id': {'allow_post': True, 'allow_put': True,
                             'default': None, 'is_visible': True,
                             'is_sort_key': True, 'is_filter': True},
         'direction': {'allow_post': True, 'allow_put': False,
                       'is_visible': True, 'is_filter': True,
                       'is_sort_key': True,
                       'validate': {'type:values': ['ingress', 'egress']}},
-        'protocol': {'allow_post': True, 'allow_put': False,
+        'protocol': {'allow_post': True, 'allow_put': True,
                      'is_visible': True, 'default': None,
                      'is_sort_key': True, 'is_filter': True,
                      'convert_to': convert_protocol},
-        'port_range_min': {'allow_post': True, 'allow_put': False,
+        'port_range_min': {'allow_post': True, 'allow_put': True,
                            'convert_to': convert_validate_port_value,
                            'default': None, 'is_visible': True,
                            'is_sort_key': True, 'is_filter': True},
-        'port_range_max': {'allow_post': True, 'allow_put': False,
+        'port_range_max': {'allow_post': True, 'allow_put': True,
                            'convert_to': convert_validate_port_value,
                            'default': None, 'is_visible': True,
                            'is_sort_key': True, 'is_filter': True},
@@ -272,7 +272,7 @@ RESOURCE_ATTRIBUTE_MAP = {
                       'is_filter': True, 'is_sort_key': True,
                       'convert_to': convert_ethertype_to_case_insensitive,
                       'validate': {'type:values': sg_supported_ethertypes}},
-        'remote_ip_prefix': {'allow_post': True, 'allow_put': False,
+        'remote_ip_prefix': {'allow_post': True, 'allow_put': True,
                              'default': None, 'is_visible': True,
                              'is_sort_key': True, 'is_filter': True,
                              'convert_to': convert_ip_prefix_to_cidr},
@@ -386,6 +386,10 @@ class SecurityGroupPluginBase(object, metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def create_security_group_rule(self, context, security_group_rule):
+        pass
+
+    @abc.abstractmethod
+    def update_security_group_rule(self, context, id, security_group_rule):
         pass
 
     @abc.abstractmethod

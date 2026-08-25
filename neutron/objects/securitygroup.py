@@ -189,7 +189,6 @@ class SecurityGroupRule(base.NeutronDbObject):
 
     fields_no_update = ['project_id',
                         'security_group_id',
-                        'remote_group_id',
                         'remote_address_group_id',
                         'belongs_to_default_sg',
                         ]
